@@ -1,0 +1,42 @@
+public List<Map<String, Object>> convertToBatch(List<RequestParameters> requestParameters) {
+
+    List<Map<String, Object>> requestParamList = requestParameters.stream()
+
+        .filter(param -> param.getBulkRequest() != null &&
+                param.getBulkRequest().getRequestKeyValue() != null &&
+
+                // 👉 IMPORTANT: at least one value should be non-null / non-empty
+                param.getBulkRequest().getRequestKeyValue().stream()
+                        .anyMatch(kv -> kv.getValue() != null && !kv.getValue().toString().trim().isEmpty())
+        )
+
+        .map(param -> param.getBulkRequest().getRequestKeyValue().stream()
+                .filter(kv -> kv.getValue() != null) // optional
+                .collect(Collectors.toMap(
+                        RequestKeyValue::getKey,
+                        kv -> (Object) kv.getValue(),
+                        (a, b) -> b,
+                        LinkedHashMap::new
+                ))
+        )
+        .collect(Collectors.toList());
+
+    // 👉 Common fields (sirf ek baar add karo)
+    List<Map<String, Object>> commonRequestParamList = requestParameters.stream()
+            .map(p -> p.getCommonRequestKeyValue().stream()
+                    .collect(Collectors.toMap(
+                            RequestKeyValue::getKey,
+                            kv -> (Object) kv.getValue(),
+                            (a, b) -> b,
+                            LinkedHashMap::new
+                    ))
+            ).collect(Collectors.toList());
+
+    if (!commonRequestParamList.isEmpty()) {
+        Map<String, Object> commonMap = commonRequestParamList.get(0);
+
+        requestParamList.forEach(param -> param.putAll(commonMap));
+    }
+
+    return requestParamList;
+}
