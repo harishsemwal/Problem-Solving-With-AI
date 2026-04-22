@@ -1,0 +1,28 @@
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* 🔥 Smart responsive behavior */
+.custom-table {
+  width: 100%;
+  min-width: max-content;
+}
+
+/* PrimeNG fix */
+::ng-deep .p-datatable-wrapper {
+  overflow-x: auto !important;
+}
+
+/* Column sizing */
+.col-request {
+  min-width: 150px;
+}
+
+.col-dynamic {
+  min-width: 200px;
+}
+
+.col-action {
+  min-width: 100px;
+}
