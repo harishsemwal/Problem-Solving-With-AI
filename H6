@@ -1,0 +1,29 @@
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.custom-table {
+  width: 100%;
+}
+
+/* 🔥 dynamic column behavior */
+.col-dynamic {
+  min-width: 150px;
+  width: 1%;       // 🔥 important (auto adjust)
+  white-space: nowrap;
+}
+
+.col-request {
+  min-width: 120px;
+  width: 1%;
+}
+
+.col-action {
+  min-width: 80px;
+  width: 1%;
+}
+
+:host ::ng-deep .p-datatable-wrapper {
+  overflow-x: auto !important;
+}
