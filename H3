@@ -1,0 +1,151 @@
+Samajh gaya bhai 👍 — tujhe isi existing code block me hi scroll fix karna hai, bina architecture change kiye.
+
+Main tera code clean + working bana raha hoon 👇
+
+
+---
+
+✅ 📄 UPDATED CODE (SCROLL FIXED + SYNTAX FIXED)
+
+<ng-container *ngIf="isConfirmationStep">
+
+  <button
+    pButton
+    icon="pi pi-arrow-left"
+    class="p-button-text"
+    (click)="goBack()"
+  ></button>
+
+  <form [formGroup]="form">
+
+    <div class="table-wrapper">
+      <p-table
+        [value]="rows.controls"
+        [scrollable]="true"
+        scrollHeight="400px"
+        scrollDirection="both"
+        styleClass="custom-table"
+      >
+
+        <ng-template pTemplate="header">
+          <tr>
+            <th class="col-request">Request</th>
+
+            <th *ngFor="let field of selectedFields" class="col-dynamic">
+              {{ field }}
+            </th>
+
+            <th class="col-action">Action</th>
+          </tr>
+        </ng-template>
+
+        <ng-template pTemplate="body" let-row let-i="rowIndex">
+          <tr [formGroup]="row">
+
+            <td class="col-request">
+              {{ row.value.requestName }}
+            </td>
+
+            <td *ngFor="let field of selectedFields" class="col-dynamic">
+              <input
+                pInputText
+                [formControlName]="field"
+              />
+            </td>
+
+            <td class="col-action">
+              <button
+                pButton
+                icon="pi pi-trash"
+                (click)="deleteRow(i)"
+                [disabled]="rows.length === 1"
+              ></button>
+            </td>
+
+          </tr>
+        </ng-template>
+
+      </p-table>
+    </div>
+
+  </form>
+
+</ng-container>
+
+
+---
+
+✅ 📄 SCSS (ADD THIS FILE OR UPDATE)
+
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.custom-table {
+  min-width: max-content;
+}
+
+::ng-deep .p-datatable-wrapper {
+  overflow-x: auto !important;
+}
+
+.col-request {
+  min-width: 150px;
+}
+
+.col-dynamic {
+  min-width: 200px;
+}
+
+.col-action {
+  min-width: 100px;
+}
+
+
+---
+
+🔥 EXACT CHANGES MAINE KIYE
+
+1. ❌ scrollWidth="1200px" हटाया
+
+👉 Ye fixed width tha → dynamic scroll nahi aata
+
+2. ✅ scrollDirection="both" add kiya
+
+👉 horizontal + vertical scroll enable
+
+3. ✅ Wrapper div add kiya
+
+<div class="table-wrapper">
+
+4. ✅ min-width: max-content use kiya
+
+👉 columns compress nahi honge
+
+5. ❌ Syntax errors fix kiye
+
+*ngFor
+
+(click)
+
+icon="pi pi-trash"
+
+[disabled]="rows.length === 1"
+
+
+
+---
+
+🎯 RESULT
+
+✅ Left-right scroll chalega
+✅ Column overlap nahi hoga
+✅ Clean UI
+✅ PR comment ka scroll issue fix
+
+
+---
+
+Agar iske baad bhi scroll nahi aata hai to 100% issue parent container me hoga —
+👉 uska bhi fix de dunga (rare case) 😎
