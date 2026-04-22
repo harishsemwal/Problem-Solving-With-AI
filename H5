@@ -1,0 +1,28 @@
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* 🔥 Main Fix */
+:host ::ng-deep .p-datatable {
+  width: max-content !important;
+  min-width: 100%;
+}
+
+/* 🔥 Important */
+:host ::ng-deep .p-datatable-wrapper {
+  overflow-x: auto !important;
+}
+
+/* Column sizing */
+.col-request {
+  min-width: 150px;
+}
+
+.col-dynamic {
+  min-width: 220px;
+}
+
+.col-action {
+  min-width: 120px;
+}
