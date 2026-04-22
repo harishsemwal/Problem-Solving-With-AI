@@ -1,0 +1,33 @@
+.table-wrapper {
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* 🔥 core fix */
+:host ::ng-deep .p-datatable table {
+  width: 100%;
+  table-layout: auto;
+}
+
+/* 🔥 scroll trigger */
+:host ::ng-deep .p-datatable-wrapper {
+  overflow-x: auto !important;
+}
+
+/* column sizing */
+.col-request {
+  min-width: 120px;
+}
+
+.col-dynamic {
+  min-width: 140px;
+}
+
+.col-action {
+  min-width: 90px;
+}
+
+/* input full width */
+.col-dynamic input {
+  width: 100%;
+}
