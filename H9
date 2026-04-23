@@ -1,0 +1,297 @@
+import {
+  Component,
+  EventEmitter,
+  Input,
+  Output,
+  OnInit,
+  OnChanges,
+  SimpleChanges
+} from '@angular/core';
+
+import {
+  FormBuilder,
+  FormGroup,
+  FormArray,
+  Validators,
+  FormControl
+} from '@angular/forms';
+
+import { Observable, Subscription } from 'rxjs';
+import { map } from 'rxjs/operators';
+
+import { SelectItem } from 'primeng/api';
+import { entitiesToCRUDOptions } from '@shared/utils/input-options.util';
+import { MappedInstructionSheet } from 'app/initiate-event/model/instruction-sheet';
+import {
+  getBranchCodeFromId,
+  getCountryCodeFromId
+} from '@shared/utils/string.util';
+
+import {
+  buildCommonRequestKeyValue,
+  buildRequestKeyValue
+} from './config/copy-request.assembler';
+
+import { StaticDataService } from '@api/referential';
+import { RequestService } from '@api/controller';
+
+@Component({
+  selector: 'dpw-copy-template-dialog',
+  templateUrl: './copy-template-dialog.component.html',
+  styleUrls: ['./copy-template-dialog.component.scss']
+})
+export class CopyTemplateDialogComponent
+  implements OnInit, OnChanges
+{
+  @Input() visible = false;
+  @Input('instructionSheet') instructionSheet: MappedInstructionSheet;
+  @Input('request') request;
+  @Input() parentFormGroup: FormGroup;
+
+  @Output() visibleChange = new EventEmitter<boolean>();
+  @Output() confirm = new EventEmitter<any>();
+
+  form: FormGroup;
+  availableFields$: Observable<SelectItem[]>;
+  selectedFields: string[] = [];
+  allFields: string[] = [];
+  copyCount = 0;
+
+  isConfirmationStep = false;
+  isResponseStep = false;
+
+  responseData: any[] = [];
+  private subscription!: Subscription;
+
+  constructor(
+    private fb: FormBuilder,
+    private staticDataService: StaticDataService,
+    private requestService: RequestService
+  ) {
+    this.form = this.fb.group({
+      copyCount: [1, [Validators.required, Validators.min(1)]],
+      fields: [[], Validators.required],
+      rows: this.fb.array([])
+    });
+  }
+
+  ngOnInit(): void {
+    this.fetchFields();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes.visible && changes.visible.currentValue) {
+      this.isConfirmationStep = false;
+      this.isResponseStep = false;
+    }
+  }
+
+  fetchFields(): void {
+    const requestId = this.instructionSheet?.requestId;
+    const branchCode = getBranchCodeFromId(requestId);
+    const countryCode = getCountryCodeFromId(requestId);
+
+    this.availableFields$ =
+      this.staticDataService
+        .getInstructionSheetParamList(branchCode, countryCode)
+        .pipe(
+          map((res: any[]) =>
+            entitiesToCRUDOptions(
+              res.map(f => ({ id: f.param, name: f.param })),
+              'name',
+              'id',
+              null,
+              'id',
+              true
+            )
+          )
+        );
+  }
+
+  get rows(): FormArray {
+    return this.form.get('rows') as FormArray;
+  }
+
+  onConfirm(): void {
+    if (this.form.valid) {
+      this.copyCount = this.form.value.copyCount;
+
+      const fields = this.form.value.fields as string[];
+      this.selectedFields = [...new Set(fields)];
+      this.allFields = fields;
+
+      this.isConfirmationStep = true;
+      this.initTable();
+    }
+  }
+
+  initTable(): void {
+    this.rows.clear();
+
+    for (let i = 0; i < this.copyCount; i++) {
+      const group: any = {
+        id: new FormControl(i + 1),
+        requestName: new FormControl(`Request ${i + 1}`)
+      };
+
+      this.selectedFields.forEach(field => {
+        group[field] = new FormControl('');
+      });
+
+      this.rows.push(this.fb.group(group));
+    }
+  }
+
+  isValid(): boolean {
+    return this.rows.controls.every(group =>
+      this.selectedFields.some(field => {
+        const val = group.get(field)?.value;
+        return val !== null && val !== undefined && val.toString().trim() !== '';
+      })
+    );
+  }
+
+  deleteRow(index: number): void {
+    if (this.rows.length > 1) {
+      this.rows.removeAt(index);
+
+      this.rows.controls.forEach((group, i) => {
+        group.get('id')?.setValue(i + 1);
+        group.get('requestName')?.setValue(`Request ${i + 1}`);
+      });
+    }
+  }
+
+  // 🔥 HELPER
+  private getValue(row: any, keys: string[]): any {
+    for (const key of keys) {
+      if (row[key]) return row[key];
+    }
+    return null;
+  }
+
+  // 🔥 MAIN UPDATED LOGIC
+  onCopy(): void {
+    const requestId = this.instructionSheet?.requestId;
+    const branchCode = getBranchCodeFromId(requestId);
+    const countryCode = getCountryCodeFromId(requestId);
+
+    const finalResponses: any[] = [];
+
+    this.rows.controls.forEach((group, index) => {
+      const row = group.value;
+
+      const umfr = this.getValue(row, ['UMFR', 'umfr']);
+      const mfr = this.getValue(row, ['MFR', 'mfr']);
+      const correspondentRef = this.getValue(row, [
+        'Correspondent Ref',
+        'CorrespondentRef'
+      ]);
+
+      let selectedRef = null;
+      let refType = '';
+
+      if (umfr) {
+        selectedRef = umfr;
+        refType = 'umfr';
+      } else if (mfr) {
+        selectedRef = mfr;
+        refType = 'mfr';
+      } else if (correspondentRef) {
+        selectedRef = correspondentRef;
+        refType = 'correspondentRef';
+      }
+
+      if (!selectedRef) {
+        finalResponses.push({
+          key: row.id,
+          value: 'Failed',
+          message: 'Invalid MFR, UMFR, Correspondent Reference'
+        });
+        return;
+      }
+
+      this.requestService
+        .getInstructionSheetByMfUmfrCorrespondentRef(
+          branchCode,
+          countryCode,
+          'BNPPUID',
+          refType === 'mfr' ? selectedRef : null,
+          refType === 'umfr' ? selectedRef : null,
+          refType === 'correspondentRef' ? selectedRef : null
+        )
+        .subscribe({
+          next: (instructionSheetResponse) => {
+            const bulkRequest = {
+              id: row.id.toString(),
+              requestKeyValue: buildRequestKeyValue(
+                instructionSheetResponse,
+                row,
+                this.selectedFields
+              )
+            };
+
+            const commonRequestKeyValue =
+              index === 0
+                ? buildCommonRequestKeyValue(instructionSheetResponse)
+                : [];
+
+            this.requestService
+              .createBulkRequest(
+                branchCode,
+                countryCode,
+                'BNPPUID',
+                requestId,
+                [
+                  {
+                    bulkRequest,
+                    commonRequestKeyValue
+                  }
+                ]
+              )
+              .subscribe({
+                next: () => {
+                  finalResponses.push({
+                    key: row.id,
+                    value: 'Success'
+                  });
+                },
+                error: () => {
+                  finalResponses.push({
+                    key: row.id,
+                    value: 'Failed'
+                  });
+                }
+              });
+          },
+          error: () => {
+            finalResponses.push({
+              key: row.id,
+              value: 'Failed'
+            });
+          }
+        });
+    });
+
+    setTimeout(() => {
+      this.responseData = finalResponses;
+      this.isConfirmationStep = false;
+      this.isResponseStep = true;
+    }, 1000);
+  }
+
+  close(): void {
+    this.visible = false;
+    this.visibleChange.emit(false);
+    this.isResponseStep = false;
+  }
+
+  goBack(): void {
+    this.isConfirmationStep = false;
+  }
+
+  goBackToConfirmation(): void {
+    this.isResponseStep = false;
+    this.isConfirmationStep = true;
+  }
+}
