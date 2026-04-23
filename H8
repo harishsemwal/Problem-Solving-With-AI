@@ -1,0 +1,256 @@
+import {
+  Component,
+  EventEmitter,
+  Input,
+  Output,
+  OnInit,
+  OnChanges,
+  SimpleChanges
+} from '@angular/core';
+
+import {
+  FormBuilder,
+  FormGroup,
+  FormArray,
+  Validators,
+  FormControl
+} from '@angular/forms';
+
+import { Observable, Subscription, forkJoin, of } from 'rxjs';
+import { map, switchMap, catchError } from 'rxjs/operators';
+
+import { SelectItem } from 'primeng/api';
+import { entitiesToCRUDOptions } from '@shared/utils/input-options.util';
+
+import { MappedInstructionSheet } from 'app/initiate-event/model/instruction-sheet';
+import { getBranchCodeFromId, getCountryCodeFromId } from '@shared/utils/string.util';
+
+import {
+  buildCommonRequestKeyValue,
+  buildRequestKeyValue
+} from './config/copy-request.assembler';
+
+import { StaticDataService } from '@api/referential';
+import { RequestService } from '@api/controller';
+import { InstructionSheetService } from '@api/controller';
+
+@Component({
+  selector: 'dpw-copy-template-dialog',
+  templateUrl: './copy-template-dialog.component.html',
+  styleUrls: ['./copy-template-dialog.component.scss']
+})
+export class CopyTemplateDialogComponent implements OnInit, OnChanges {
+  @Input() visible = false;
+  @Input() instructionSheet: MappedInstructionSheet;
+  @Input() request: any;
+  @Input() parentFormGroup: FormGroup;
+
+  @Output() visibleChange = new EventEmitter<boolean>();
+  @Output() confirm = new EventEmitter<any>();
+
+  form: FormGroup;
+  availableFields$: Observable<SelectItem[]>;
+
+  selectedFields: string[] = [];
+  allFields: string[] = [];
+
+  copyCount = 0;
+
+  isConfirmationStep = false;
+  isResponseStep = false;
+
+  responseData: any[] = [];
+
+  private subscription: Subscription;
+
+  constructor(
+    private fb: FormBuilder,
+    private staticDataService: StaticDataService,
+    private requestService: RequestService,
+    private instructionSheetService: InstructionSheetService
+  ) {
+    this.form = this.fb.group({
+      copyCount: [1, [Validators.required, Validators.min(1)]],
+      fields: [[], Validators.required],
+      rows: this.fb.array([])
+    });
+  }
+
+  ngOnInit(): void {
+    this.fetchFields();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes.visible && changes.visible.currentValue) {
+      this.isConfirmationStep = false;
+      this.isResponseStep = false;
+    }
+  }
+
+  fetchFields(): void {
+    const requestId = this.instructionSheet?.requestId;
+    const branchCode = getBranchCodeFromId(requestId);
+    const countryCode = getCountryCodeFromId(requestId);
+
+    this.availableFields$ =
+      this.staticDataService.getInstructionSheetParamList(branchCode, countryCode)
+        .pipe(
+          map((res: any[]) =>
+            entitiesToCRUDOptions(
+              res.map(f => ({ id: f.param, name: f.param })),
+              'name',
+              'id',
+              null,
+              'id',
+              true
+            )
+          )
+        );
+  }
+
+  get rows(): FormArray {
+    return this.form.get('rows') as FormArray;
+  }
+
+  onConfirm(): void {
+    if (this.form.valid) {
+      this.copyCount = this.form.value.copyCount;
+      const fields = this.form.value.fields as string[];
+
+      this.selectedFields = [...new Set(fields)];
+      this.allFields = fields;
+
+      this.isConfirmationStep = true;
+      this.initTable();
+    }
+  }
+
+  initTable(): void {
+    this.rows.clear();
+
+    for (let i = 0; i < this.copyCount; i++) {
+      const group: any = {
+        id: new FormControl(i + 1),
+        requestName: new FormControl(`Request ${i + 1}`)
+      };
+
+      this.selectedFields.forEach(field => {
+        group[field] = new FormControl('');
+      });
+
+      this.rows.push(this.fb.group(group));
+    }
+  }
+
+  isValid(): boolean {
+    return this.rows.controls.every(group =>
+      this.selectedFields.some(field => {
+        const val = group.get(field)?.value;
+        return val !== null && val !== undefined && val.toString().trim() !== '';
+      })
+    );
+  }
+
+  deleteRow(index: number): void {
+    if (this.rows.length > 1) {
+      this.rows.removeAt(index);
+
+      this.rows.controls.forEach((group, i) => {
+        group.get('id')?.setValue(i + 1);
+        group.get('requestName')?.setValue(`Request ${i + 1}`);
+      });
+    }
+  }
+
+  // 🔥🔥🔥 MAIN UPDATED LOGIC
+  onCopy(): void {
+    const requestId = this.instructionSheet?.requestId;
+    const branchCode = getBranchCodeFromId(requestId);
+    const countryCode = getCountryCodeFromId(requestId);
+
+    const observables = this.rows.controls.map((group, index) => {
+      const row = group.value;
+
+      const mfr = row['mfr'] || null;
+      const umfr = row['umfr'] || null;
+      const correspondentRef = row['correspondentRef'] || null;
+
+      // ❌ Invalid case
+      if (!umfr && !mfr && !correspondentRef) {
+        return of({
+          key: row.id,
+          value: 'Invalid mfr, umfr, correspondent ref'
+        });
+      }
+
+      // ✅ Priority
+      const finalUmfr = umfr || null;
+      const finalMfr = !umfr && mfr ? mfr : null;
+      const finalCorrespondentRef =
+        !umfr && !mfr ? correspondentRef : null;
+
+      return this.instructionSheetService
+        .getInstructionSheetByMfrUmfrCorrespondentRef(
+          branchCode,
+          countryCode,
+          'BNPPUID',
+          finalMfr,
+          finalUmfr,
+          finalCorrespondentRef
+        )
+        .pipe(
+          switchMap((instructionSheet: any) => {
+            const bulkRequest = {
+              id: row.id.toString(),
+              requestKeyValue: buildRequestKeyValue(
+                instructionSheet,
+                row,
+                this.selectedFields
+              )
+            };
+
+            const commonRequestKeyValue =
+              index === 0
+                ? buildCommonRequestKeyValue(instructionSheet)
+                : [];
+
+            return this.requestService.createBulkRequest(
+              branchCode,
+              countryCode,
+              'BNPPUID',
+              instructionSheet?.requestId,
+              [{ bulkRequest, commonRequestKeyValue }]
+            );
+          }),
+
+          map(() => ({
+            key: row.id,
+            value: 'Success'
+          })),
+
+          catchError(() =>
+            of({
+              key: row.id,
+              value: 'Failed'
+            })
+          )
+        );
+    });
+
+    forkJoin(observables).subscribe(results => {
+      this.responseData = results;
+      this.isConfirmationStep = false;
+      this.isResponseStep = true;
+    });
+  }
+
+  close(): void {
+    this.visible = false;
+    this.visibleChange.emit(false);
+    this.isResponseStep = false;
+  }
+
+  goBack(): void {
+    this.isConfirmationStep = false;
+  }
+}
