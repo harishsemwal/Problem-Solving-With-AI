@@ -1,0 +1,368 @@
+import {
+  Component,
+  EventEmitter,
+  Input,
+  Output,
+  OnInit,
+  OnChanges,
+  SimpleChanges
+} from '@angular/core';
+
+import {
+  FormBuilder,
+  FormGroup,
+  FormArray,
+  Validators,
+  FormControl
+} from '@angular/forms';
+
+import { Observable, Subscription, forkJoin, of } from 'rxjs';
+import { map, switchMap, catchError } from 'rxjs/operators';
+
+import { SelectItem } from 'primeng/api';
+import { entitiesToCRUDOptions } from '@shared/utils/input-options.util';
+
+import { MappedInstructionSheet } from 'app/initiate-event/model/instruction-sheet';
+import {
+  getBranchCodeFromId,
+  getCountryCodeFromId
+} from '@shared/utils/string.util';
+
+import {
+  buildCommonRequestKeyValue,
+  buildRequestKeyValue
+} from './config/copy-request.assembler';
+
+import { StaticDataService } from '@api/referential';
+import { RequestService } from '@api/controller';
+
+// ─── Field key constants for UMFR / MFR / Correspondent Ref matching ──────────
+// Adjust these string values if your actual param names differ.
+const FIELD_UMFR = 'Util Main Folder Ref';
+const FIELD_MFR  = 'Main Folder Ref';
+const FIELD_CORR = 'Correspondent Ref';
+
+// Shape returned by the response table
+interface RowResult {
+  key: string;        // display label, e.g. "Request 1"
+  value: 'Success' | 'Failed';
+  message?: string;   // optional detail for failures
+}
+
+@Component({
+  selector: 'dpw-copy-template-dialog',
+  templateUrl: './copy-template-dialog.component.html',
+  styleUrls: ['./copy-template-dialog.component.scss']
+})
+export class CopyTemplateDialogComponent implements OnInit, OnChanges {
+  @Input() visible = false;
+  @Input('instructionSheet') instructionSheet: MappedInstructionSheet;
+  @Input('request') request: any;
+  @Input() parentFormGroup: FormGroup;
+
+  @Output() visibleChange = new EventEmitter<boolean>();
+  @Output() confirm = new EventEmitter<any>();
+
+  form: FormGroup;
+  availableFields$: Observable<SelectItem[]>;
+
+  selectedFields: string[] = [];
+  allFields: string[] = [];
+
+  copyCount = 0;
+
+  isConfirmationStep = false;
+  isResponseStep = false;
+
+  responseData: RowResult[] = [];
+
+  private subscription: Subscription;
+
+  constructor(
+    private fb: FormBuilder,
+    private staticDataService: StaticDataService,
+    private requestService: RequestService
+  ) {
+    this.form = this.fb.group({
+      copyCount: [1, [Validators.required, Validators.min(1)]],
+      fields: [[], Validators.required],
+      rows: this.fb.array([])
+    });
+  }
+
+  ngOnInit(): void {
+    this.fetchFields();
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes.visible && changes.visible.currentValue) {
+      this.isConfirmationStep = false;
+      this.isResponseStep = false;
+    }
+  }
+
+  fetchFields(): void {
+    const requestId = this.instructionSheet?.requestId;
+    const branchCode = getBranchCodeFromId(requestId);
+    const countryCode = getCountryCodeFromId(requestId);
+
+    this.availableFields$ =
+      this.staticDataService
+        .getInstructionSheetParamList(branchCode, countryCode)
+        .pipe(
+          map((res: any[]) =>
+            entitiesToCRUDOptions(
+              res.map(f => ({ id: f.param, name: f.param })),
+              'name',
+              'id',
+              null,
+              'id',
+              true
+            )
+          )
+        );
+  }
+
+  get rows(): FormArray {
+    return this.form.get('rows') as FormArray;
+  }
+
+  onConfirm(): void {
+    if (this.form.valid) {
+      this.copyCount = this.form.value.copyCount;
+      const fields = this.form.value.fields as string[];
+
+      this.selectedFields = [...new Set(fields)];
+      this.allFields = fields;
+
+      this.isConfirmationStep = true;
+      this.initTable();
+    }
+  }
+
+  initTable(): void {
+    this.rows.clear();
+
+    for (let i = 0; i < this.copyCount; i++) {
+      const group: any = {
+        id: new FormControl(i + 1),
+        requestName: new FormControl(`Request ${i + 1}`)
+      };
+
+      this.selectedFields.forEach(field => {
+        group[field] = new FormControl('');
+      });
+
+      this.rows.push(this.fb.group(group));
+    }
+  }
+
+  isValid(): boolean {
+    return this.rows.controls.every(group =>
+      this.selectedFields.some(field => {
+        const val = group.get(field)?.value;
+        return (
+          val !== null &&
+          val !== undefined &&
+          val.toString().trim() !== ''
+        );
+      })
+    );
+  }
+
+  deleteRow(index: number): void {
+    if (this.rows.length > 1) {
+      this.rows.removeAt(index);
+
+      this.rows.controls.forEach((group, i) => {
+        group.get('id')?.setValue(i + 1);
+        group.get('requestName')?.setValue(`Request ${i + 1}`);
+      });
+    }
+  }
+
+  // ─── HELPERS ────────────────────────────────────────────────────────────────
+
+  /**
+   * Reads the UMFR / MFR / Correspondent Ref values from a row using
+   * case-insensitive matching against selectedFields, then returns
+   * the three candidate strings (empty string when absent).
+   */
+  private extractReferenceFields(row: any): {
+    umfr: string;
+    mfr: string;
+    corr: string;
+  } {
+    const find = (target: string): string => {
+      const matchedKey = this.selectedFields.find(
+        f => f.trim().toLowerCase() === target.trim().toLowerCase()
+      );
+      return matchedKey ? (row[matchedKey] ?? '').toString().trim() : '';
+    };
+
+    return {
+      umfr: find(FIELD_UMFR),
+      mfr:  find(FIELD_MFR),
+      corr: find(FIELD_CORR)
+    };
+  }
+
+  /**
+   * Applies UMFR > MFR > Correspondent Ref priority and returns the
+   * three arguments to pass to getInstructionSheetByMfUmfrCorrespondentRef.
+   * Returns null when all three are empty (invalid row).
+   */
+  private resolveRefArgs(
+    umfr: string,
+    mfr: string,
+    corr: string
+  ): { umfrArg: string | null; mfrArg: string | null; corrArg: string | null } | null {
+    if (umfr) {
+      return { umfrArg: umfr, mfrArg: null, corrArg: null };
+    }
+    if (mfr) {
+      return { umfrArg: null, mfrArg: mfr, corrArg: null };
+    }
+    if (corr) {
+      return { umfrArg: null, mfrArg: null, corrArg: corr };
+    }
+    return null; // all empty → invalid
+  }
+
+  // ─── EXTENDED onCopy() ──────────────────────────────────────────────────────
+
+  /**
+   * For every row:
+   *  1. Extract UMFR / MFR / Correspondent Ref and apply priority.
+   *  2. If all empty → mark row as failed immediately (no API call).
+   *  3. Otherwise → call getInstructionSheetByMfUmfrCorrespondentRef,
+   *     use the returned instruction sheet to build the payload,
+   *     and call createBulkRequest with the request ID from that sheet.
+   *
+   * All rows are processed independently; results are collected and
+   * stored in responseData for the existing response-step table.
+   */
+  onCopy(): void {
+    // Build one observable per row.
+    const rowObservables: Observable<RowResult>[] = this.rows.controls.map(
+      (group, index) => {
+        const row = group.value;
+        const rowLabel = row.requestName ?? `Request ${index + 1}`;
+
+        // ── Step 1: extract + resolve reference values ────────────────────
+        const { umfr, mfr, corr } = this.extractReferenceFields(row);
+        const refArgs = this.resolveRefArgs(umfr, mfr, corr);
+
+        // ── Step 2: guard – no valid reference → instant failure ──────────
+        if (!refArgs) {
+          return of<RowResult>({
+            key: rowLabel,
+            value: 'Failed',
+            message: 'Invalid MFR, UMFR, Correspondent Reference'
+          });
+        }
+
+        const { umfrArg, mfrArg, corrArg } = refArgs;
+
+        // ── Step 3: fetch instruction sheet for this row ──────────────────
+        return this.staticDataService
+          .getInstructionSheetByMfUmfrCorrespondentRef(
+            umfrArg,
+            mfrArg,
+            corrArg
+          )
+          .pipe(
+            switchMap((fetchedSheet: MappedInstructionSheet) => {
+              // Use the request ID that comes from the fetched sheet.
+              const requestId  = fetchedSheet?.requestId;
+              const branchCode = getBranchCodeFromId(requestId);
+              const countryCode = getCountryCodeFromId(requestId);
+
+              // Build payload using the fetched instruction sheet.
+              const bulkRequest = {
+                id: row.id.toString(),
+                requestKeyValue: buildRequestKeyValue(
+                  fetchedSheet,
+                  row,
+                  this.selectedFields
+                )
+              };
+
+              // commonRequestKeyValue only for the first logical entry
+              // (preserve original intent: sent once alongside the request).
+              const commonRequestKeyValue =
+                buildCommonRequestKeyValue(fetchedSheet);
+
+              const requestParameters = [
+                { bulkRequest, commonRequestKeyValue }
+              ];
+
+              // ── Step 4: create the bulk request ────────────────────────
+              return this.requestService
+                .createBulkRequest(
+                  branchCode,
+                  countryCode,
+                  'BNPPUID',
+                  requestId,
+                  requestParameters
+                )
+                .pipe(
+                  map((response: any) => {
+                    // Flatten the response the same way the original code did.
+                    const items: any[] = Array.isArray(response)
+                      ? response.reduce((acc: any[], val: any) => acc.concat(val), [])
+                      : [response];
+
+                    // Treat the row as successful when at least one item
+                    // in the response indicates success.
+                    const anySuccess = items.some(
+                      item => item?.value === 'Success'
+                    );
+
+                    return {
+                      key: rowLabel,
+                      value: anySuccess ? 'Success' : 'Failed'
+                    } as RowResult;
+                  }),
+                  catchError(() =>
+                    of<RowResult>({ key: rowLabel, value: 'Failed' })
+                  )
+                );
+            }),
+            catchError(() =>
+              of<RowResult>({
+                key: rowLabel,
+                value: 'Failed',
+                message: 'Could not retrieve Instruction Sheet'
+              })
+            )
+          );
+      }
+    );
+
+    // ── Process all rows independently and collect results ─────────────────
+    this.subscription = forkJoin(rowObservables).subscribe({
+      next: (results: RowResult[]) => {
+        this.responseData = results;
+        this.isConfirmationStep = false;
+        this.isResponseStep = true;
+      },
+      error: (err) => console.error('Unexpected error during bulk copy:', err)
+    });
+  }
+
+  close(): void {
+    this.visible = false;
+    this.visibleChange.emit(false);
+    this.isResponseStep = false;
+  }
+
+  goBack(): void {
+    this.isConfirmationStep = false;
+  }
+
+  goBackToConfirmation(): void {
+    this.isResponseStep = false;
+    this.isConfirmationStep = true;
+  }
+}
